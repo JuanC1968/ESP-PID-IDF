@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <math.h>
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -21,12 +22,64 @@ static const char *TAG = "ESP-PID-IDF";
 #define ADC_SAMPLES 16
 #define ADC_SAMPLE_DELAY_US 250
 
+#define CONTROL_INTERVAL_MS 100
+#define SERIAL_INTERVAL_MS 1000
+#define SENSOR_FILTER_ALPHA 0.12f
+#define SET_ENTER_BAND 1.0f
+#define SET_EXIT_BAND 1.0f
+
 #define PWM_FREQUENCY_HZ 5000
 #define PWM_RESOLUTION LEDC_TIMER_10_BIT
 #define PWM_MAX_DUTY ((1U << 10) - 1)
 #define PWM_TIMER LEDC_TIMER_0
 #define PWM_CHANNEL LEDC_CHANNEL_0
 #define PWM_MODE LEDC_LOW_SPEED_MODE
+
+typedef struct {
+    float setpoint;
+    float kp;
+    float ki;
+    float kd;
+    float out_min;
+    float out_max;
+    bool invert_sensor;
+} pid_config_t;
+
+typedef struct {
+    float input;
+    float raw_percent;
+    float output;
+    float error;
+    float integral;
+    float derivative;
+    float last_error;
+    int raw;
+    bool in_set;
+    bool filter_ready;
+} runtime_state_t;
+
+static pid_config_t config = {
+    .setpoint = 55.0f,
+    .kp = 7.0f,
+    .ki = 0.6f,
+    .kd = 0.15f,
+    .out_min = 0.0f,
+    .out_max = (float)PWM_MAX_DUTY,
+    .invert_sensor = false,
+};
+
+static runtime_state_t state = {0};
+
+static float clamp_float(float value, float minimum, float maximum)
+{
+    if (value < minimum) {
+        return minimum;
+    }
+    if (value > maximum) {
+        return maximum;
+    }
+    return value;
+}
 
 static void configure_status_leds(void)
 {
@@ -107,7 +160,62 @@ static float read_light_percent(adc_oneshot_unit_handle_t adc_handle, int *raw)
     }
 
     *raw = (int)(accumulator / ADC_SAMPLES);
-    return ((float)(*raw) * 100.0f) / ADC_MAX_RAW;
+    float percent = ((float)(*raw) * 100.0f) / ADC_MAX_RAW;
+    if (config.invert_sensor) {
+        percent = 100.0f - percent;
+    }
+
+    return clamp_float(percent, 0.0f, 100.0f);
+}
+
+static float read_filtered_light_percent(adc_oneshot_unit_handle_t adc_handle)
+{
+    state.raw_percent = read_light_percent(adc_handle, &state.raw);
+
+    if (!state.filter_ready) {
+        state.input = state.raw_percent;
+        state.filter_ready = true;
+    } else {
+        state.input += SENSOR_FILTER_ALPHA * (state.raw_percent - state.input);
+    }
+
+    return state.input;
+}
+
+static void update_status_leds(void)
+{
+    float abs_error = fabsf(state.error);
+    if (state.in_set) {
+        state.in_set = abs_error <= SET_EXIT_BAND;
+    } else {
+        state.in_set = abs_error <= SET_ENTER_BAND;
+    }
+
+    gpio_set_level(PIN_LED_GREEN, state.in_set);
+    gpio_set_level(PIN_LED_RED, !state.in_set);
+}
+
+static void update_pid(adc_oneshot_unit_handle_t adc_handle)
+{
+    state.input = read_filtered_light_percent(adc_handle);
+    state.error = config.setpoint - state.input;
+    state.integral += state.error * ((float)CONTROL_INTERVAL_MS / 1000.0f);
+    state.derivative = (state.error - state.last_error) / ((float)CONTROL_INTERVAL_MS / 1000.0f);
+
+    float unclamped = (config.kp * state.error) +
+                      (config.ki * state.integral) +
+                      (config.kd * state.derivative);
+    state.output = clamp_float(unclamped, config.out_min, config.out_max);
+
+    bool saturated_high = unclamped > config.out_max && state.error > 0.0f;
+    bool saturated_low = unclamped < config.out_min && state.error < 0.0f;
+    if (saturated_high || saturated_low) {
+        state.integral -= state.error * ((float)CONTROL_INTERVAL_MS / 1000.0f);
+    }
+
+    state.last_error = state.error;
+    write_white_led_pwm((uint32_t)state.output);
+    update_status_leds();
 }
 
 void app_main(void)
@@ -119,36 +227,24 @@ void app_main(void)
     configure_white_led_pwm();
     adc_oneshot_unit_handle_t adc_handle = configure_ldr_adc();
 
-    bool green_on = false;
-    int32_t pwm_duty = 0;
-    int32_t pwm_step = PWM_MAX_DUTY / 4;
-
+    uint32_t elapsed_ms = 0;
     while (true) {
-        green_on = !green_on;
-        gpio_set_level(PIN_LED_GREEN, green_on);
-        gpio_set_level(PIN_LED_RED, !green_on);
-        write_white_led_pwm((uint32_t)pwm_duty);
+        update_pid(adc_handle);
+        elapsed_ms += CONTROL_INTERVAL_MS;
 
-        int raw = 0;
-        float light_percent = read_light_percent(adc_handle, &raw);
-
-        ESP_LOGI(TAG, "loop vivo: verde=%s rojo=%s pwm=%ld/%u adc=%d luz=%.1f%%",
-                 green_on ? "ON" : "OFF",
-                 green_on ? "OFF" : "ON",
-                 (long)pwm_duty,
-                 PWM_MAX_DUTY,
-                 raw,
-                 light_percent);
-
-        pwm_duty += pwm_step;
-        if (pwm_duty >= (int32_t)PWM_MAX_DUTY) {
-            pwm_duty = PWM_MAX_DUTY;
-            pwm_step = -pwm_step;
-        } else if (pwm_duty <= 0) {
-            pwm_duty = 0;
-            pwm_step = -pwm_step;
+        if (elapsed_ms >= SERIAL_INTERVAL_MS) {
+            elapsed_ms = 0;
+            ESP_LOGI(TAG,
+                     "PV=%.1f%% RAW=%.1f%% ADC=%d SP=%.1f%% Error=%.1f PWM=%.0f Estado=%s",
+                     state.input,
+                     state.raw_percent,
+                     state.raw,
+                     config.setpoint,
+                     state.error,
+                     state.output,
+                     state.in_set ? "SET" : "NO SET");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(CONTROL_INTERVAL_MS));
     }
 }
