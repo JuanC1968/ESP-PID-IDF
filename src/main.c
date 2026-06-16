@@ -2,8 +2,10 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -12,6 +14,12 @@ static const char *TAG = "ESP-PID-IDF";
 #define PIN_LED_WHITE GPIO_NUM_25
 #define PIN_LED_GREEN GPIO_NUM_26
 #define PIN_LED_RED GPIO_NUM_27
+
+#define ADC_LDR_UNIT ADC_UNIT_1
+#define ADC_LDR_CHANNEL ADC_CHANNEL_6
+#define ADC_MAX_RAW 4095
+#define ADC_SAMPLES 16
+#define ADC_SAMPLE_DELAY_US 250
 
 #define PWM_FREQUENCY_HZ 5000
 #define PWM_RESOLUTION LEDC_TIMER_10_BIT
@@ -68,6 +76,40 @@ static void write_white_led_pwm(uint32_t duty)
     ESP_ERROR_CHECK(ledc_update_duty(PWM_MODE, PWM_CHANNEL));
 }
 
+static adc_oneshot_unit_handle_t configure_ldr_adc(void)
+{
+    adc_oneshot_unit_handle_t adc_handle = NULL;
+    adc_oneshot_unit_init_cfg_t unit_config = {
+        .unit_id = ADC_LDR_UNIT,
+        .clk_src = ADC_RTC_CLK_SRC_DEFAULT,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_config, &adc_handle));
+
+    adc_oneshot_chan_cfg_t channel_config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_LDR_CHANNEL, &channel_config));
+
+    return adc_handle;
+}
+
+static float read_light_percent(adc_oneshot_unit_handle_t adc_handle, int *raw)
+{
+    uint32_t accumulator = 0;
+
+    for (uint8_t i = 0; i < ADC_SAMPLES; i++) {
+        int sample = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_LDR_CHANNEL, &sample));
+        accumulator += (uint32_t)sample;
+        esp_rom_delay_us(ADC_SAMPLE_DELAY_US);
+    }
+
+    *raw = (int)(accumulator / ADC_SAMPLES);
+    return ((float)(*raw) * 100.0f) / ADC_MAX_RAW;
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "ESP-PID-IDF iniciado");
@@ -75,6 +117,7 @@ void app_main(void)
 
     configure_status_leds();
     configure_white_led_pwm();
+    adc_oneshot_unit_handle_t adc_handle = configure_ldr_adc();
 
     bool green_on = false;
     int32_t pwm_duty = 0;
@@ -86,11 +129,16 @@ void app_main(void)
         gpio_set_level(PIN_LED_RED, !green_on);
         write_white_led_pwm((uint32_t)pwm_duty);
 
-        ESP_LOGI(TAG, "loop vivo: verde=%s rojo=%s pwm=%ld/%u",
+        int raw = 0;
+        float light_percent = read_light_percent(adc_handle, &raw);
+
+        ESP_LOGI(TAG, "loop vivo: verde=%s rojo=%s pwm=%ld/%u adc=%d luz=%.1f%%",
                  green_on ? "ON" : "OFF",
                  green_on ? "OFF" : "ON",
                  (long)pwm_duty,
-                 PWM_MAX_DUTY);
+                 PWM_MAX_DUTY,
+                 raw,
+                 light_percent);
 
         pwm_duty += pwm_step;
         if (pwm_duty >= (int32_t)PWM_MAX_DUTY) {
