@@ -16,11 +16,15 @@
 
 static const char *TAG = "storage";
 
+// Guardamos version + configuracion en un blob. La version permite detectar
+// cambios futuros en la estructura y no interpretar datos viejos como actuales.
 typedef struct {
     uint32_t version;
     pid_config_t config;
 } stored_pid_config_t;
 
+// Defensa basica: aunque lleguen datos raros desde NVS o la web, los campos con
+// limites fisicos vuelven a un rango razonable.
 static void sanitize_pid_config(pid_config_t *next_config)
 {
     next_config->setpoint = clamp_float(next_config->setpoint, 0.0f, 100.0f);
@@ -28,6 +32,8 @@ static void sanitize_pid_config(pid_config_t *next_config)
     next_config->out_max = clamp_float(next_config->out_max, next_config->out_min, (float)PWM_MAX_DUTY);
 }
 
+// NVS puede quedarse sin paginas libres tras cambios de version/particion. En
+// ese caso se borra y se inicializa de nuevo, que es el patron habitual de IDF.
 esp_err_t init_storage(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -38,6 +44,8 @@ esp_err_t init_storage(void)
     return err;
 }
 
+// Lee el blob guardado. Cualquier ausencia de datos se trata como situacion
+// normal: simplemente se mantienen los parametros por defecto de app_state.c.
 esp_err_t load_pid_config(void)
 {
     nvs_handle_t handle = 0;
@@ -70,6 +78,8 @@ esp_err_t load_pid_config(void)
     return ESP_OK;
 }
 
+// Escribe la configuracion completa de una vez y hace commit. Sin nvs_commit(),
+// el cambio no queda garantizado en flash.
 esp_err_t save_pid_config(void)
 {
     sanitize_pid_config(&config);

@@ -23,6 +23,8 @@ void app_main(void)
     ESP_ERROR_CHECK(init_storage());
     ESP_ERROR_CHECK(load_pid_config());
 
+    // Inicializacion de perifericos. La pantalla se configura antes del ADC y la
+    // web porque no es critica: si no aparece, el firmware sigue adelante.
     configure_status_leds();
     configure_white_led_pwm();
     configure_display();
@@ -32,10 +34,13 @@ void app_main(void)
     uint32_t elapsed_ms = 0;
     uint32_t display_elapsed_ms = 0;
     while (true) {
+        // El lazo principal es cooperativo: una iteracion de control y una pausa
+        // fija. No hay interrupciones ni tareas extra para el PID.
         update_pid(adc_handle);
         elapsed_ms += CONTROL_INTERVAL_MS;
         display_elapsed_ms += CONTROL_INTERVAL_MS;
 
+        // El log serie sirve como telemetria humana, no como parte del control.
         if (elapsed_ms >= SERIAL_INTERVAL_MS) {
             elapsed_ms = 0;
             ESP_LOGI(TAG,
@@ -49,6 +54,7 @@ void app_main(void)
                      state.in_set ? "SET" : "NO SET");
         }
 
+        // La OLED se refresca mas despacio que el PID para ahorrar tiempo I2C.
         if (display_elapsed_ms >= DISPLAY_INTERVAL_MS) {
             display_elapsed_ms = 0;
             draw_display();

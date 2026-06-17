@@ -6,6 +6,7 @@
 
 #include "app_config.h"
 
+// Los LEDs de estado son salidas digitales normales.
 void configure_status_leds(void)
 {
     gpio_config_t config = {
@@ -20,6 +21,9 @@ void configure_status_leds(void)
     set_status_leds(false);
 }
 
+// LEDC separa la configuracion en dos piezas:
+// - timer: frecuencia y resolucion del PWM
+// - channel: pin fisico y canal que usara ese timer
 void configure_white_led_pwm(void)
 {
     ledc_timer_config_t timer_config = {
@@ -43,6 +47,7 @@ void configure_white_led_pwm(void)
     ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
 }
 
+// LEDC no aplica el duty hasta llamar a ledc_update_duty().
 void write_white_led_pwm(uint32_t duty)
 {
     if (duty > PWM_MAX_DUTY) {
@@ -53,6 +58,7 @@ void write_white_led_pwm(uint32_t duty)
     ESP_ERROR_CHECK(ledc_update_duty(PWM_MODE, PWM_CHANNEL));
 }
 
+// Verde = dentro de tolerancia; rojo = fuera de tolerancia.
 void set_status_leds(bool in_set)
 {
     gpio_set_level(PIN_LED_GREEN, in_set);

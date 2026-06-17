@@ -1,5 +1,7 @@
 #include "app_state.h"
 
+// Configuracion por defecto. Si NVS contiene una configuracion valida,
+// storage.c la cargara encima durante el arranque.
 pid_config_t config = {
     .setpoint = 55.0f,
     .kp = 7.0f,
@@ -12,6 +14,7 @@ pid_config_t config = {
 
 runtime_state_t state = {0};
 
+// Pequena funcion auxiliar para evitar repetir comparaciones de minimo/maximo.
 float clamp_float(float value, float minimum, float maximum)
 {
     if (value < minimum) {
@@ -23,6 +26,8 @@ float clamp_float(float value, float minimum, float maximum)
     return value;
 }
 
+// Reset de control: util cuando se cambian parametros o se quiere borrar la
+// integral acumulada sin reiniciar toda la placa.
 void reset_pid_state(void)
 {
     state.integral = 0.0f;

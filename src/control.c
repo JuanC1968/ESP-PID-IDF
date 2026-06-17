@@ -7,6 +7,8 @@
 #include "hardware.h"
 #include "sensor.h"
 
+// Histeresis del estado SET/NO SET. Evita que el LED verde/rojo parpadee si el
+// error esta justo en el limite.
 static void update_status_leds(void)
 {
     float abs_error = fabsf(state.error);
@@ -19,6 +21,8 @@ static void update_status_leds(void)
     set_status_leds(state.in_set);
 }
 
+// Una pasada del controlador. CONTROL_INTERVAL_MS fija el dt usado por la parte
+// integral y derivativa del PID.
 void update_pid(adc_oneshot_unit_handle_t adc_handle)
 {
     state.input = read_filtered_light_percent(adc_handle);
@@ -31,6 +35,8 @@ void update_pid(adc_oneshot_unit_handle_t adc_handle)
                       (config.kd * state.derivative);
     state.output = clamp_float(unclamped, config.out_min, config.out_max);
 
+    // Anti-windup: si la salida esta saturada y el error sigue empujando hacia
+    // fuera, retiramos la ultima suma integral para que no crezca sin control.
     bool saturated_high = unclamped > config.out_max && state.error > 0.0f;
     bool saturated_low = unclamped < config.out_min && state.error < 0.0f;
     if (saturated_high || saturated_low) {
