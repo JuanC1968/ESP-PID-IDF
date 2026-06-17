@@ -9,6 +9,7 @@
 #include "control.h"
 #include "hardware.h"
 #include "sensor.h"
+#include "web_server.h"
 
 static const char *TAG = "ESP-PID-IDF";
 
@@ -20,6 +21,7 @@ void app_main(void)
     configure_status_leds();
     configure_white_led_pwm();
     adc_oneshot_unit_handle_t adc_handle = configure_ldr_adc();
+    start_web_server();
 
     uint32_t elapsed_ms = 0;
     while (true) {

@@ -22,3 +22,13 @@ float clamp_float(float value, float minimum, float maximum)
     }
     return value;
 }
+
+void reset_pid_state(void)
+{
+    state.integral = 0.0f;
+    state.derivative = 0.0f;
+    state.last_error = 0.0f;
+    state.output = 0.0f;
+    state.in_set = false;
+    state.filter_ready = false;
+}
