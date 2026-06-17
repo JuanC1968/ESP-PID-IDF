@@ -13,17 +13,31 @@
 #include "app_config.h"
 #include "app_state.h"
 
+// En los OLED SSD1306/SH1107 el primer byte de cada transferencia indica si lo
+// que viene despues son comandos de control o datos de pantalla.
 #define OLED_CONTROL_COMMAND 0x00
 #define OLED_CONTROL_DATA 0x40
+
+// La pantalla es monocroma: 1 bit por pixel. La memoria se organiza en paginas
+// de 8 pixels de alto, por eso 128x128 necesita 128 * 16 = 2048 bytes.
 #define OLED_BUFFER_SIZE (OLED_WIDTH * OLED_PAGES)
 #define FONT_WIDTH 5
 #define FONT_HEIGHT 7
 
 static const char *TAG = "display";
+
+// Handles del nuevo driver I2C de ESP-IDF. El bus representa SDA/SCL; el device
+// representa la pantalla concreta colgada de ese bus.
 static uint8_t oled_address = OLED_ADDRESS_PRIMARY;
 static i2c_master_bus_handle_t i2c_bus = NULL;
 static i2c_master_dev_handle_t oled_device = NULL;
+
+// buffer es nuestra copia en RAM de lo que queremos ver en pantalla. Dibujamos
+// aqui primero y luego oled_flush() lo envia al OLED de una vez.
 static uint8_t buffer[OLED_BUFFER_SIZE];
+
+// Historial circular para la grafica. graph_index apunta al siguiente hueco
+// donde se escribira; cuando llega al final vuelve a cero.
 static float graph_input[GRAPH_WIDTH];
 static float graph_setpoint[GRAPH_WIDTH];
 static uint8_t graph_index = 0;
@@ -31,6 +45,8 @@ static uint8_t graph_count = 0;
 static bool display_ready = false;
 
 // Fuente 5x7 clasica. Cada byte representa una columna y cada bit un pixel.
+// La expresion ['A' - ' '] coloca cada dibujo en el indice ASCII relativo al
+// espacio, que es el primer caracter imprimible que aceptamos.
 static const uint8_t font_5x7[][FONT_WIDTH] = {
     [' ' - ' '] = {0x00, 0x00, 0x00, 0x00, 0x00},
     ['%' - ' '] = {0x62, 0x64, 0x08, 0x13, 0x23},
@@ -66,6 +82,8 @@ static const uint8_t font_5x7[][FONT_WIDTH] = {
     ['p' - ' '] = {0x7C, 0x14, 0x14, 0x14, 0x08},
 };
 
+// Envia una transferencia I2C a la pantalla. Se usan dos buffers para evitar
+// copiar datos grandes: primero el byte de control y despues el contenido real.
 static esp_err_t oled_write(uint8_t control, const uint8_t *data, size_t length)
 {
     i2c_master_transmit_multi_buffer_info_t buffers[] = {
@@ -76,16 +94,20 @@ static esp_err_t oled_write(uint8_t control, const uint8_t *data, size_t length)
     return i2c_master_multi_buffer_transmit(oled_device, buffers, 2, 100);
 }
 
+// Atajo para mandar un unico comando del controlador SH1107.
 static esp_err_t oled_command(uint8_t command)
 {
     return oled_write(OLED_CONTROL_COMMAND, &command, 1);
 }
 
+// Borra solo el framebuffer en RAM. La pantalla fisica no cambia hasta flush().
 static void oled_clear(void)
 {
     memset(buffer, 0, sizeof(buffer));
 }
 
+// Enciende o apaga un pixel dentro del framebuffer. La division por 8 localiza
+// la pagina vertical; el modulo 8 localiza el bit dentro de esa pagina.
 static void oled_pixel(int x, int y, bool on)
 {
     if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT) {
@@ -101,6 +123,7 @@ static void oled_pixel(int x, int y, bool on)
     }
 }
 
+// Linea horizontal sencilla, util para la referencia del 50% en la grafica.
 static void oled_hline(int x, int y, int width)
 {
     for (int i = 0; i < width; i++) {
@@ -108,6 +131,8 @@ static void oled_hline(int x, int y, int width)
     }
 }
 
+// Dibuja una linea con el algoritmo de Bresenham. Solo usa enteros, asi que es
+// rapido y encaja bien en microcontroladores.
 static void oled_line(int x0, int y0, int x1, int y1)
 {
     int dx = abs(x1 - x0);
@@ -134,6 +159,7 @@ static void oled_line(int x0, int y0, int x1, int y1)
     }
 }
 
+// Dibuja un caracter leyendo sus 5 columnas de la tabla font_5x7.
 static void oled_char(int x, int y, char c)
 {
     if (c < ' ' || c > 'z') {
@@ -143,6 +169,7 @@ static void oled_char(int x, int y, char c)
     const uint8_t *glyph = font_5x7[c - ' '];
     for (int col = 0; col < FONT_WIDTH; col++) {
         for (int row = 0; row < FONT_HEIGHT; row++) {
+            // Si el bit de esa fila esta a 1, pintamos el pixel correspondiente.
             if ((glyph[col] & (1U << row)) != 0) {
                 oled_pixel(x + col, y + row, true);
             }
@@ -150,6 +177,7 @@ static void oled_char(int x, int y, char c)
     }
 }
 
+// Dibuja texto avanzando 6 pixels por caracter: 5 de letra y 1 de separacion.
 static void oled_text(int x, int y, const char *text)
 {
     while (*text != '\0') {
@@ -159,6 +187,8 @@ static void oled_text(int x, int y, const char *text)
     }
 }
 
+// Vuelca el framebuffer completo al OLED. El SH1107 trabaja por paginas de 8
+// pixels de alto; antes de escribir cada pagina seleccionamos pagina y columna.
 static esp_err_t oled_flush(void)
 {
     for (uint8_t page = 0; page < OLED_PAGES; page++) {
@@ -166,6 +196,8 @@ static esp_err_t oled_flush(void)
         ESP_RETURN_ON_ERROR(oled_command(0x00), TAG, "No se pudo seleccionar columna baja");
         ESP_RETURN_ON_ERROR(oled_command(0x10), TAG, "No se pudo seleccionar columna alta");
 
+        // Enviamos 16 columnas por transferencia para no usar buffers grandes en
+        // la pila y para mantener cada paquete I2C manejable.
         for (uint8_t column = 0; column < OLED_WIDTH; column += 16) {
             ESP_RETURN_ON_ERROR(oled_write(OLED_CONTROL_DATA,
                                            &buffer[(page * OLED_WIDTH) + column],
@@ -177,12 +209,15 @@ static esp_err_t oled_flush(void)
     return ESP_OK;
 }
 
+// Convierte porcentaje 0..100 a coordenada Y de la grafica. En pantalla Y crece
+// hacia abajo, por eso el calculo esta invertido.
 static uint8_t graph_y(float percent)
 {
     percent = clamp_float(percent, 0.0f, 100.0f);
     return GRAPH_Y + GRAPH_HEIGHT - 1 - (uint8_t)((percent * (GRAPH_HEIGHT - 1)) / 100.0f);
 }
 
+// Guarda una muestra nueva en el historial circular de la grafica.
 static void push_graph_sample(void)
 {
     graph_input[graph_index] = state.input;
@@ -193,6 +228,8 @@ static void push_graph_sample(void)
     }
 }
 
+// Dibuja PV como linea continua y SP como puntos, para distinguirlos en una
+// pantalla monocroma sin colores.
 static void draw_graph(void)
 {
     oled_hline(GRAPH_X, graph_y(50.0f), GRAPH_WIDTH);
@@ -203,6 +240,8 @@ static void draw_graph(void)
     int previous_y = -1;
     int first_x = GRAPH_X + GRAPH_WIDTH - graph_count;
     for (uint8_t i = 0; i < graph_count; i++) {
+        // Si el buffer ya esta lleno, graph_index apunta al dato mas antiguo.
+        // Si aun no esta lleno, las muestras validas empiezan en cero.
         uint8_t sample_index = (graph_count == GRAPH_WIDTH) ? (graph_index + i) % GRAPH_WIDTH : i;
         int x = first_x + i;
         int input_y = graph_y(graph_input[sample_index]);
@@ -219,6 +258,8 @@ static void draw_graph(void)
     }
 }
 
+// Secuencia minima de inicializacion del controlador SH1107 para 128x128.
+// Estos comandos preparan multiplexado, orientacion, contraste y encienden panel.
 static esp_err_t oled_init(void)
 {
     const uint8_t init_commands[] = {
@@ -248,6 +289,7 @@ static esp_err_t oled_init(void)
 
 void configure_display(void)
 {
+    // Primero se crea el bus I2C fisico con SDA/SCL y pull-ups internos.
     i2c_master_bus_config_t bus_config = {
         .i2c_port = OLED_I2C_PORT,
         .sda_io_num = PIN_I2C_SDA,
@@ -259,6 +301,7 @@ void configure_display(void)
 
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
 
+    // Probamos las dos direcciones habituales de los modulos OLED I2C.
     esp_err_t probe_err = i2c_master_probe(i2c_bus, oled_address, 100);
     if (probe_err != ESP_OK) {
         oled_address = OLED_ADDRESS_SECONDARY;
@@ -270,6 +313,8 @@ void configure_display(void)
         return;
     }
 
+    // Una vez encontrada la direccion, registramos la pantalla como dispositivo
+    // I2C para poder transmitirle comandos y datos.
     i2c_device_config_t device_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = oled_address,
@@ -286,6 +331,9 @@ void configure_display(void)
     }
 
     display_ready = true;
+
+    // Mensaje inicial visible unos instantes, hasta que el bucle principal llame
+    // a draw_display() y pinte la pantalla de telemetria.
     oled_text(8, 8, "OLED OK");
     oled_text(8, 24, "ESP-PID-IDF");
     oled_flush();
@@ -293,13 +341,17 @@ void configure_display(void)
 
 void draw_display(void)
 {
+    // Si no hay OLED conectada, esta funcion queda anulada y el PID sigue vivo.
     if (!display_ready) {
         return;
     }
 
+    // Cada refresco de pantalla añade una muestra a la grafica.
     push_graph_sample();
     oled_clear();
 
+    // Las lineas de texto se formatean primero en un buffer pequeño y luego se
+    // dibujan con la fuente 5x7.
     char line[24];
     oled_text(2, 2, "PID LDR");
     oled_text(70, 2, state.in_set ? "SET" : "NO SET");
