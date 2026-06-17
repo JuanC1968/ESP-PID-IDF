@@ -10,6 +10,7 @@
 #include "display_ui.h"
 #include "hardware.h"
 #include "sensor.h"
+#include "storage.h"
 #include "web_server.h"
 
 static const char *TAG = "ESP-PID-IDF";
@@ -18,6 +19,9 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "ESP-PID-IDF iniciado");
     ESP_LOGI(TAG, "ESP-IDF version: %s", esp_get_idf_version());
+
+    ESP_ERROR_CHECK(init_storage());
+    ESP_ERROR_CHECK(load_pid_config());
 
     configure_status_leds();
     configure_white_led_pwm();

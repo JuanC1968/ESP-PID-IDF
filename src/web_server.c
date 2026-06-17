@@ -14,10 +14,10 @@
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_wifi.h"
-#include "nvs_flash.h"
 
 #include "app_config.h"
 #include "app_state.h"
+#include "storage.h"
 
 #define WEB_AP_SSID "ESP-PID-IDF"
 #define WEB_AP_PASSWORD "12345678"
@@ -27,18 +27,6 @@
 #define POST_BODY_MAX 256
 
 static const char *TAG = "web";
-
-// NVS es la memoria no volatil que usa internamente el WiFi de ESP-IDF para
-// guardar datos de calibracion/configuracion. Hay que iniciarla antes del WiFi.
-static esp_err_t init_nvs(void)
-{
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_RETURN_ON_ERROR(nvs_flash_erase(), TAG, "No se pudo borrar NVS");
-        err = nvs_flash_init();
-    }
-    return err;
-}
 
 // Monta la particion SPIFFS como si fuera una carpeta del sistema:
 // /spiffs/index.html, /spiffs/app.js, etc. PlatformIO genera esa particion a
@@ -291,6 +279,11 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     }
     config.invert_sensor = form_has_key(body, "invert");
 
+    if (save_pid_config() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No se pudo guardar configuracion");
+        return ESP_FAIL;
+    }
+
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
@@ -327,7 +320,6 @@ static void register_uri_handlers(httpd_handle_t server)
 // main.c solo necesita llamar a esta funcion una vez durante el arranque.
 void start_web_server(void)
 {
-    ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(mount_spiffs());
     ESP_ERROR_CHECK(start_wifi_ap());
 
