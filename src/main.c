@@ -7,6 +7,7 @@
 #include "app_config.h"
 #include "app_state.h"
 #include "control.h"
+#include "display_ui.h"
 #include "hardware.h"
 #include "sensor.h"
 #include "web_server.h"
@@ -20,13 +21,16 @@ void app_main(void)
 
     configure_status_leds();
     configure_white_led_pwm();
+    configure_display();
     adc_oneshot_unit_handle_t adc_handle = configure_ldr_adc();
     start_web_server();
 
     uint32_t elapsed_ms = 0;
+    uint32_t display_elapsed_ms = 0;
     while (true) {
         update_pid(adc_handle);
         elapsed_ms += CONTROL_INTERVAL_MS;
+        display_elapsed_ms += CONTROL_INTERVAL_MS;
 
         if (elapsed_ms >= SERIAL_INTERVAL_MS) {
             elapsed_ms = 0;
@@ -39,6 +43,11 @@ void app_main(void)
                      state.error,
                      state.output,
                      state.in_set ? "SET" : "NO SET");
+        }
+
+        if (display_elapsed_ms >= DISPLAY_INTERVAL_MS) {
+            display_elapsed_ms = 0;
+            draw_display();
         }
 
         vTaskDelay(pdMS_TO_TICKS(CONTROL_INTERVAL_MS));

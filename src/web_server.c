@@ -28,6 +28,8 @@
 
 static const char *TAG = "web";
 
+// NVS es la memoria no volatil que usa internamente el WiFi de ESP-IDF para
+// guardar datos de calibracion/configuracion. Hay que iniciarla antes del WiFi.
 static esp_err_t init_nvs(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -38,6 +40,9 @@ static esp_err_t init_nvs(void)
     return err;
 }
 
+// Monta la particion SPIFFS como si fuera una carpeta del sistema:
+// /spiffs/index.html, /spiffs/app.js, etc. PlatformIO genera esa particion a
+// partir de la carpeta data/ cuando hacemos pio run -t uploadfs.
 static esp_err_t mount_spiffs(void)
 {
     esp_vfs_spiffs_conf_t conf = {
@@ -56,6 +61,8 @@ static esp_err_t mount_spiffs(void)
     return ESP_OK;
 }
 
+// Crea una red WiFi propia del ESP32. En esta primera version no se conecta al
+// router de casa: el movil/PC se conecta directamente al punto de acceso.
 static esp_err_t start_wifi_ap(void)
 {
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "No se pudo iniciar netif");
@@ -84,6 +91,8 @@ static esp_err_t start_wifi_ap(void)
     return ESP_OK;
 }
 
+// El navegador necesita saber el tipo de archivo que recibe para interpretarlo
+// bien. No es lo mismo enviar HTML que CSS o JavaScript.
 static const char *content_type_for_path(const char *path)
 {
     const char *extension = strrchr(path, '.');
@@ -105,6 +114,8 @@ static const char *content_type_for_path(const char *path)
     return "text/plain";
 }
 
+// Lee un archivo desde SPIFFS y lo envia al navegador en trozos pequenos.
+// En un microcontrolador conviene no cargar el archivo completo en RAM.
 static esp_err_t send_file(httpd_req_t *req, const char *relative_path)
 {
     char path[FILE_PATH_MAX];
@@ -126,6 +137,7 @@ static esp_err_t send_file(httpd_req_t *req, const char *relative_path)
     char buffer[256];
     size_t read_bytes = 0;
     while ((read_bytes = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        // httpd_resp_send_chunk permite ir mandando la respuesta por partes.
         if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
             fclose(file);
             httpd_resp_sendstr_chunk(req, NULL);
@@ -153,6 +165,8 @@ static esp_err_t style_css_handler(httpd_req_t *req)
     return send_file(req, "/style.css");
 }
 
+// Devuelve los valores vivos del controlador PID. app.js consulta este endpoint
+// cada segundo para actualizar las tarjetas de la pagina.
 static esp_err_t status_handler(httpd_req_t *req)
 {
     char response[256];
@@ -172,6 +186,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, response);
 }
 
+// Devuelve la configuracion actual del PID. La pagina lo usa para rellenar el
+// formulario cuando carga o despues de guardar cambios.
 static esp_err_t config_json_handler(httpd_req_t *req)
 {
     char response[256];
@@ -191,6 +207,9 @@ static esp_err_t config_json_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, response);
 }
 
+// Los formularios HTML llegan como texto tipo:
+// setpoint=55.0&kp=7.0&ki=0.6&invert=on
+// Estas funciones pequenas buscan claves y convierten numeros dentro de ese texto.
 static bool form_has_key(const char *body, const char *key)
 {
     char needle[32];
@@ -219,6 +238,8 @@ static bool form_float(const char *body, const char *key, float *out)
     return true;
 }
 
+// httpd_req_recv puede devolver el cuerpo en varios fragmentos. Esta funcion
+// junta todo el POST en un buffer terminado en '\0' para poder tratarlo como string.
 static esp_err_t read_post_body(httpd_req_t *req, char *body, size_t body_size)
 {
     if (req->content_len >= body_size) {
@@ -240,6 +261,8 @@ static esp_err_t read_post_body(httpd_req_t *req, char *body, size_t body_size)
     return ESP_OK;
 }
 
+// Recibe el formulario de parametros y actualiza la configuracion global del PID.
+// Los clamp evitan valores fuera de rango en campos que si tienen limites fisicos.
 static esp_err_t config_post_handler(httpd_req_t *req)
 {
     char body[POST_BODY_MAX];
@@ -272,6 +295,7 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// Reinicia el estado acumulado del PID sin reiniciar el ESP32 completo.
 static esp_err_t reset_post_handler(httpd_req_t *req)
 {
     reset_pid_state();
@@ -279,6 +303,8 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// Relaciona cada URL con la funcion que debe atenderla. El servidor HTTP de IDF
+// llama automaticamente al handler adecuado cuando llega una peticion.
 static void register_uri_handlers(httpd_handle_t server)
 {
     const httpd_uri_t routes[] = {
@@ -297,6 +323,8 @@ static void register_uri_handlers(httpd_handle_t server)
     }
 }
 
+// Punto de entrada publico de este modulo: prepara almacenamiento, WiFi y HTTP.
+// main.c solo necesita llamar a esta funcion una vez durante el arranque.
 void start_web_server(void)
 {
     ESP_ERROR_CHECK(init_nvs());
