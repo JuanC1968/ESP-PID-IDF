@@ -9,6 +9,7 @@
 #include "control.h"
 #include "display_ui.h"
 #include "hardware.h"
+#include "rs485.h"
 #include "sensor.h"
 #include "storage.h"
 #include "web_server.h"
@@ -28,6 +29,7 @@ void app_main(void)
     configure_status_leds();
     configure_white_led_pwm();
     configure_display();
+    configure_rs485();
     adc_oneshot_unit_handle_t adc_handle = configure_ldr_adc();
     start_web_server();
 
@@ -52,6 +54,7 @@ void app_main(void)
                      state.error,
                      state.output,
                      state.in_set ? "SET" : "NO SET");
+            send_rs485_telemetry();
         }
 
         // La OLED se refresca mas despacio que el PID para ahorrar tiempo I2C.

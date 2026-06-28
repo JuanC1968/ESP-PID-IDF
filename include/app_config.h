@@ -5,6 +5,7 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "driver/uart.h"
 #include "hal/adc_types.h"
 
 // Pines del montaje. GPIO34 no aparece aqui porque el ADC en IDF se configura
@@ -14,6 +15,15 @@
 #define PIN_LED_RED GPIO_NUM_27
 #define PIN_I2C_SDA GPIO_NUM_21
 #define PIN_I2C_SCL GPIO_NUM_22
+
+// RS485 de pruebas. Usamos UART2 para no tocar la UART0 que queda reservada al
+// USB/monitor serie de ESP-IDF. DE y /RE del modulo MAX485 van unidos al mismo
+// pin: alto transmite, bajo recibe.
+#define RS485_UART_PORT UART_NUM_2
+#define PIN_RS485_TX GPIO_NUM_17
+#define PIN_RS485_RX GPIO_NUM_16
+#define PIN_RS485_DE_RE GPIO_NUM_23
+#define RS485_BAUD_RATE 9600
 
 // Lectura del LDR por ADC. Tomamos varias muestras y las promediamos para que
 // el PID no reaccione a ruido instantaneo del conversor analogico-digital.
